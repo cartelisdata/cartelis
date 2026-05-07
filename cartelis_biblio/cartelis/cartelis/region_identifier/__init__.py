@@ -1,1 +1,1 @@
-from .module import extract_csv_region, code_postal_to_region, region_to_code_postal
+from .module import load_base_code_postal, code_postal_to_communes, commune_to_code_postal

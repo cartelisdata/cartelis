@@ -490,7 +490,7 @@ def verify_prenom(df, colonne_nom = "nom", colonne_prenom = "prenom", inplace: b
 
     #_______________________________PRENOM PLUS PROCHE____________________________________
 
-def rapprocher_prenom(df, colonne_nom = "nom", colonne_prenom = "prenom", THRESHOLD=90, MIN_TOKEN_LENGTH=2, inplace: bool = False) -> pd.DataFrame:
+def rapprocher_prenom(df, colonne_nom="nom", colonne_prenom="prenom", THRESHOLD=90, MIN_TOKEN_LENGTH=2, inplace: bool = False) -> pd.DataFrame:
     '''
     Propose des corrections orthographiques pour les tokens de prénom via fuzzy matching.
 
@@ -528,122 +528,123 @@ def rapprocher_prenom(df, colonne_nom = "nom", colonne_prenom = "prenom", THRESH
     Comportement et cas limites
     ---------------------------
     - Token déjà exact dans `PRENOM_SET` → score=100, conservé.
-    - Token de longueur < `MIN_TOKEN_LENGTH` → score=0, non gardé.
+    - Token d'une seule lettre (initiale ex: "J") → conservé tel quel.
+    - Token de longueur < `MIN_TOKEN_LENGTH` et > 1 → écarté.
     - Aucun candidat trouvé → token original conservé, score=None.
 
     Exemple
     -------
-    >>> df = pd.DataFrame([{"nom": "DOE", "prenom": "Jhn"}])
-    >>> out = rapprocher_prenom(df, mode="light", THRESHOLD=85)
-    >>> out.loc[0, "prenom_corrige"]  # si "JOHN" est dans PRENOM_SET
-    'JOHN'
+    >>> df = pd.DataFrame([{"nom": "DOE", "prenom": "J Pierre"}])
+    >>> out = rapprocher_prenom(df, THRESHOLD=90)
+    >>> out.loc[0, "prenom_corrige"]
+    'J PIERRE'
     '''
 
-    df_normalized = normalize_names(df, mode= "light", colonne_nom=colonne_nom, colonne_prenom=colonne_prenom, inplace=inplace)
+    df_normalized = normalize_names(df, mode="light", colonne_nom=colonne_nom, colonne_prenom=colonne_prenom, inplace=inplace)
 
     def canon(s):
         if s is None or pd.isna(s):
             return None
-        s = s.upper()
-        return s
+        return s.upper()
+
     def rapprocher_token(token, prenom_set_canon, threshold, min_length=MIN_TOKEN_LENGTH):
         token_canon = canon(token)
-        
+
         if len(token_canon) < min_length:
             return token_canon, 0
-        
+
         if token_canon in prenom_set_canon:
             return token_canon, 100
-        
+
         result = process.extractOne(
             token_canon,
             prenom_set_canon,
             scorer=fuzz.ratio
         )
-        
+
         if result is None:
             return token_canon, None
-        
+
         best_match, score, _ = result
-        
+
         if score >= threshold:
             return best_match, score
         else:
             return token_canon, score
 
-
-    def corriger_prenom(prenom_raw, prenom_set_canon, threshold=80, min_length=MIN_TOKEN_LENGTH):
+    def corriger_prenom(prenom_raw, prenom_set_canon, threshold=THRESHOLD, min_length=MIN_TOKEN_LENGTH):
         if prenom_raw is None or pd.isna(prenom_raw):
             return {"prenom_corrige": None, "tokens_corriges": [], "correction_faite": False}
-        
+
         tokens = re.split(r"[\s\-_/\.]+", str(prenom_raw).strip())
         tokens = [t for t in tokens if t]
-        
+
         if not tokens:
             return {"prenom_corrige": prenom_raw, "tokens_corriges": [], "correction_faite": False}
-        
+
         tokens_corriges = []
         correction_faite = False
-        
+
         for token in tokens:
             token_canon = canon(token)
-            
+
+            # ── Initiale (lettre seule) : conservée telle quelle ──────────────
             if len(token_canon) < min_length:
-                correction_faite = True
                 tokens_corriges.append({
                     "original": token,
-                    "corrige": token_canon,
-                    "score": 0,
+                    "corrige":  token_canon,
+                    "score":    0,
                     "remplace": False,
-                    "garde": False
+                    "garde":    len(token_canon) == 1  # True si initiale, False sinon
                 })
+                if len(token_canon) != 1:
+                    correction_faite = True
                 continue
-            
+
+            # ── Token exact dans le dict ──────────────────────────────────────
             if token_canon in prenom_set_canon:
                 tokens_corriges.append({
                     "original": token,
-                    "corrige": token_canon,
-                    "score": 100,
+                    "corrige":  token_canon,
+                    "score":    100,
                     "remplace": False,
-                    "garde": True
+                    "garde":    True
                 })
+
+            # ── Fuzzy matching ────────────────────────────────────────────────
             else:
                 best, score = rapprocher_token(token, prenom_set_canon, threshold, min_length)
                 remplace = (score is not None and score >= threshold and best != token_canon)
-                garde = (score is not None and score >= threshold)
-                
+                garde    = (score is not None and score >= threshold)
+
                 if remplace or not garde:
                     correction_faite = True
-                    
+
                 tokens_corriges.append({
                     "original": token,
-                    "corrige": best if remplace else token_canon,
-                    "score": score,
+                    "corrige":  best if remplace else token_canon,
+                    "score":    score,
                     "remplace": remplace,
-                    "garde": garde
+                    "garde":    garde
                 })
-        
+
         tokens_valides = [t["corrige"] for t in tokens_corriges if t["garde"]]
         prenom_corrige = " ".join(tokens_valides) if tokens_valides else None
 
         return {
-            "prenom_corrige": prenom_corrige,
+            "prenom_corrige":  prenom_corrige,
             "tokens_corriges": tokens_corriges,
             "correction_faite": correction_faite
         }
 
-
-    # ______________________________________ Application __________________________________________
-    # On applique UNE SEULE FOIS et on stocke dans une Series de dicts
+    # ── Application ───────────────────────────────────────────────────────────
     corrections = df_normalized["prenom_normalized"].apply(
         lambda x: corriger_prenom(x, PRENOM_SET, threshold=THRESHOLD, min_length=MIN_TOKEN_LENGTH)
     )
 
-    # Ensuite on dépaque chaque clé séparément
-    df_normalized["prenom_corrige"]      = corrections.apply(lambda x: x["prenom_corrige"])
-    df_normalized["correction_faite"]    = corrections.apply(lambda x: x["correction_faite"])
-    df_normalized["detail_corrections"]  = corrections.apply(lambda x: x["tokens_corriges"])
-
+    df_normalized["prenom_corrige"]     = corrections.apply(lambda x: x["prenom_corrige"])
+    df_normalized["correction_faite"]   = corrections.apply(lambda x: x["correction_faite"])
+    df_normalized["detail_corrections"] = corrections.apply(lambda x: x["tokens_corriges"])
 
     return df_normalized[[colonne_nom, colonne_prenom, "prenom_corrige", "correction_faite", "detail_corrections"]]
 

@@ -1,62 +1,77 @@
 import pandas as pd
 import os
+import functools
 from rapidfuzz import process, fuzz
 
 
+_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
-def extract_csv_region():
+
+@functools.lru_cache(maxsize=1)
+def load_base_code_postal() -> pd.DataFrame:
     """
-    Extrait les données de la région à partir du fichier CSV.
+    Charge le CSV une seule fois en mémoire (mis en cache).
     """
-    _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-    base_regions = pd.read_csv(os.path.join(_DATA_DIR, "regions.csv"), dtype=str)
-    return base_regions
+    path = os.path.join(_DATA_DIR, "regions.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Fichier introuvable : {path}")
+    df = pd.read_csv(path, dtype=str)
+    df["nom_commune_upper"] = df["nom_commune"].str.strip().str.upper()
+    return df
 
 
-
-def code_postal_to_region(code_postal):
+def code_postal_to_communes(code_postal: str) -> list[str]:
     """
-    Convertit un code postal en région.
+    Retourne la liste des communes associées à un code postal.
+    Retourne une liste vide si aucun résultat.
+
+    Exemple :
+        >>> code_postal_to_communes("75001")
+        ["Paris"]
     """
-    base_regions = extract_csv_region()
-    region = base_regions[base_regions["code_postal"] == code_postal]["nom_commune"].values
-    if len(region) > 0:
-        return region[0]
-    else:
-        return None
+    df = load_base_code_postal()
+    results = df[df["code_postal"] == code_postal.strip()]["nom_commune"].tolist()
+    return results
 
 
-
-
-def region_to_code_postal(region, threshold=80):
+def commune_to_code_postal(nom_commune: str, threshold: int = 80) -> dict:
     """
-    Convertit un nom de région (approché) en code postal.
-    Retourne un dict {"nom_commune": ..., "code_postal": ...} ou None.
+    Convertit un nom de commune (approché) en code postal via matching flou.
+    Retourne toujours un dict :
+      - En succès : {"nom_commune": ..., "code_postal": ..., "score": ...}
+      - En échec  : {"error": "...message explicite..."}
+
+    Paramètres :
+        nom_commune (str) : nom de la commune saisi par l'utilisateur
+        threshold   (int) : score minimum de similarité (0-100), défaut 80
+
+    Exemple :
+        >>> commune_to_code_postal("Marseil")
+        {"nom_commune": "Marseille", "code_postal": "13000", "score": 93}
+
+        >>> commune_to_code_postal("xyzabc")
+        {"error": "Commune introuvable : 'xyzabc'. Vérifiez l'orthographe ou essayez un nom approché."}
     """
-    base_regions = extract_csv_region()
-    
-    communes = base_regions["nom_commune"].dropna().tolist()
-    
-    # Recherche du meilleur match approximatif
+    df = load_base_code_postal()
+    communes_upper = df["nom_commune_upper"].dropna().tolist()
+
     result = process.extractOne(
-        region.strip().upper(),
-        [c.upper() for c in communes],
+        nom_commune.strip().upper(),
+        communes_upper,
         scorer=fuzz.token_sort_ratio,
-        score_cutoff=threshold  # en dessous de ce seuil → None
+        score_cutoff=threshold
     )
-    
+
     if result is None:
-        return None
-    
+        return {
+            "error": f"Commune introuvable : '{nom_commune}'. Vérifiez l'orthographe ou essayez un nom approché."
+        }
+
     best_match, score, idx = result
-    matched_commune = communes[idx]
-    
-    code_postal = base_regions[
-        base_regions["nom_commune"] == matched_commune
-    ]["code_postal"].values[0]
-    
+    row = df.iloc[idx]
+
     return {
-        "nom_commune": matched_commune,
-        "code_postal": code_postal,
-        "score": score  # utile pour débugger la qualité du match
+        "nom_commune": row["nom_commune"],
+        "code_postal": row["code_postal"],
+        "score": score
     }

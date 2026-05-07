@@ -4,4 +4,4 @@ from .audit_loss import audit_loss
 from .region_identifier import *
 from .extract_same_email_or_phone import *
 
-__version__ = "1.8.7"
+__version__ = "1.9.0"
